@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Thirty Juz, Thirty Readers</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-[#0F2A24]">
+<div class="max-w-md mx-auto px-5 pt-8 pb-24">
+
+  <header class="mb-6">
+    <h1 class="font-serif text-[#F0E6C8] text-3xl leading-tight">Thirty Juz, Thirty Readers</h1>
+    <p class="text-[#8FAA9C] text-sm mt-1.5">Tap an open number to claim it. Mark it read once you finish.</p>
+  </header>
+
+  <div class="mb-6">
+    <div class="flex justify-between text-xs text-[#8FAA9C] mb-1.5">
+      <span id="statusLine">Loading…</span>
+      <span id="openLine"></span>
+    </div>
+    <div class="h-1.5 bg-[#1B3E36] rounded-full overflow-hidden flex">
+      <div id="doneBar" class="h-full bg-[#C9A227]" style="width:0%"></div>
+      <div id="claimedBar" class="h-full bg-[#4E6B5D]" style="width:0%"></div>
+    </div>
+  </div>
+
+  <label class="block mb-6">
+    <span class="text-xs uppercase tracking-wide text-[#8FAA9C]">Your name</span>
+    <input id="nameInput" placeholder="e.g. Amr"
+      class="mt-1.5 w-full bg-[#16352D] text-[#F0E6C8] placeholder-[#5C7A6C] rounded-lg px-3.5 py-2.5 outline-none border border-[#2A5346] focus:border-[#C9A227] transition-colors" />
+  </label>
+
+  <div id="grid" class="grid grid-cols-5 gap-2.5"></div>
+
+  <p id="notice" class="hidden mt-5 text-sm text-[#E8B4A0] bg-[#3A2420] border border-[#5C3A32] rounded-lg px-3.5 py-2.5"></p>
+
+  <div id="detail" class="hidden mt-5 bg-[#16352D] border border-[#2A5346] rounded-xl p-4">
+    <div class="flex items-baseline justify-between mb-3">
+      <h2 class="font-serif text-[#F0E6C8] text-xl" id="detailTitle"></h2>
+      <span class="text-xs text-[#8FAA9C]" id="detailStatus"></span>
+    </div>
+    <div id="detailActions"></div>
+    <p id="detailLock" class="hidden text-xs text-[#5C7A6C] mt-2"></p>
+  </div>
+
+  <p class="text-xs text-[#5C7A6C] mt-8 text-center">
+    Everyone using this link sees the same board — refreshes automatically every few seconds.
+  </p>
+</div>
+
+<script>
+const TOTAL = 30;
+let board = null;
+let selected = null;
+let busy = false;
+
+const nameInput = document.getElementById('nameInput');
+const notice = document.getElementById('notice');
+
+function getName() { return nameInput.value.trim(); }
+
+function showNotice(msg) {
+  notice.textContent = msg;
+  notice.classList.toggle('hidden', !msg);
+}
+
+async function fetchBoard() {
+  const res = await fetch('/api/board');
+  if (!res.ok) throw new Error('fetch failed');
+  return res.json();
+}
+
+async function saveBoard(updated) {
+  const res = await fetch('/api/board', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ board: updated }),
+  });
+  if (!res.ok) throw new Error('save failed');
+  return true;
+}
+
+async function refresh() {
+  try {
+    board = await fetchBoard();
+    render();
+  } catch (e) {
+    showNotice('Having trouble reaching the shared board. Pull to refresh.');
+  }
+}
+
+async function commit(mutate, expectStatus) {
+  if (!getName()) {
+    showNotice('Enter your name first.');
+    nameInput.focus();
+    return;
+  }
+  busy = true;
+  showNotice('');
+  render();
+  try {
+    const fresh = await fetchBoard();
+    const entry = fresh.find(j => j.number === selected);
+    if (expectStatus && entry.status !== expectStatus) {
+      board = fresh;
+      showNotice(
+        entry.status === 'open'
+          ? `Juz ${selected} is open again.`
+          : `Juz ${selected} is ${entry.status === 'completed' ? 'already marked read' : `now held by ${entry.claimedBy}`}.`
+      );
+      busy = false;
+      render();
+      return;
+    }
+    const updated = fresh.map(j => j.number === selected ? mutate(j) : j);
+    await saveBoard(updated);
+    board = updated;
+  } catch (e) {
+    showNotice('Could not save that — please try again.');
+    await refresh();
+  } finally {
+    busy = false;
+    render();
+  }
+}
+
+function claim() {
+  commit(j => ({ ...j, status: 'claimed', claimedBy: getName() }), 'open');
+}
+
+function release() {
+  const entry = board.find(j => j.number === selected);
+  if ((entry.claimedBy || '').toLowerCase() !== getName().toLowerCase()) {
+    showNotice(`Only ${entry.claimedBy} can release this one.`);
+    render();
+    return;
+  }
+  commit(j => ({ ...j, status: 'open', claimedBy: null }), 'claimed');
+}
+
+function complete() {
+  const entry = board.find(j => j.number === selected);
+  if ((entry.claimedBy || '').toLowerCase() !== getName().toLowerCase()) {
+    showNotice(`Only ${entry.claimedBy} can mark this one read.`);
+    render();
+    return;
+  }
+  commit(j => ({ ...j, status: 'completed' }), 'claimed');
+}
+
+function render() {
+  if (!board) return;
+
+  const doneCount = board.filter(j => j.status === 'completed').length;
+  const claimedCount = board.filter(j => j.status === 'claimed').length;
+
+  document.getElementById('statusLine').textContent = `${doneCount} read · ${claimedCount} in progress`;
+  document.getElementById('openLine').textContent = `${TOTAL - doneCount - claimedCount} open`;
+  document.getElementById('doneBar').style.width = `${(doneCount / TOTAL) * 100}%`;
+  document.getElementById('claimedBar').style.width = `${(claimedCount / TOTAL) * 100}%`;
+
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  board.forEach(j => {
+    const isSel = selected === j.number;
+    let base = 'bg-[#16352D] text-[#D8CFB0] border-[#2A5346]';
+    if (j.status === 'completed') base = 'bg-[#C9A227] text-[#0F2A24] border-[#C9A227]';
+    else if (j.status === 'claimed') base = 'bg-[#2A5346] text-[#F0E6C8] border-[#4E6B5D]';
+
+    const btn = document.createElement('button');
+    btn.className = `aspect-square rounded-lg border flex flex-col items-center justify-center transition-transform active:scale-95 ${base} ${isSel ? 'ring-2 ring-[#F0E6C8] ring-offset-2 ring-offset-[#0F2A24]' : ''}`;
+    btn.innerHTML = `<span class="font-serif text-lg leading-none">${j.number}</span>${j.status === 'completed' ? '<span class="text-[10px] mt-1">✓</span>' : ''}`;
+    btn.onclick = () => { selected = j.number; showNotice(''); render(); };
+    grid.appendChild(btn);
+  });
+
+  const entry = selected ? board.find(j => j.number === selected) : null;
+  const detail = document.getElementById('detail');
+  detail.classList.toggle('hidden', !entry);
+  if (!entry) return;
+
+  const isMine = (entry.claimedBy || '').toLowerCase() === getName().toLowerCase();
+
+  document.getElementById('detailTitle').textContent = `Juz ${entry.number}`;
+  document.getElementById('detailStatus').textContent =
+    entry.status === 'open' ? 'Open' :
+    entry.status === 'claimed' ? `Held by ${entry.claimedBy}` :
+    `Read by ${entry.claimedBy}`;
+
+  const actions = document.getElementById('detailActions');
+  actions.innerHTML = '';
+
+  if (entry.status === 'open') {
+    const b = document.createElement('button');
+    b.className = 'w-full bg-[#C9A227] text-[#0F2A24] font-medium rounded-lg py-2.5 disabled:opacity-50';
+    b.textContent = 'Claim this juz';
+    b.disabled = busy;
+    b.onclick = claim;
+    actions.appendChild(b);
+  } else if (entry.status === 'claimed') {
+    actions.className = 'flex gap-2.5';
+    const done = document.createElement('button');
+    done.className = 'flex-1 bg-[#C9A227] text-[#0F2A24] font-medium rounded-lg py-2.5 disabled:opacity-50';
+    done.textContent = 'Mark read';
+    done.disabled = busy;
+    done.onclick = complete;
+    const rel = document.createElement('button');
+    rel.className = 'flex-1 bg-transparent border border-[#4E6B5D] text-[#D8CFB0] rounded-lg py-2.5 disabled:opacity-50';
+    rel.textContent = 'Release';
+    rel.disabled = busy;
+    rel.onclick = release;
+    actions.appendChild(done);
+    actions.appendChild(rel);
+  } else {
+    const p = document.createElement('p');
+    p.className = 'text-sm text-[#8FAA9C]';
+    p.textContent = 'Alhamdulillah — this one is done.';
+    actions.appendChild(p);
+  }
+
+  const lock = document.getElementById('detailLock');
+  if (entry.status !== 'open' && !isMine) {
+    lock.textContent = `Only ${entry.claimedBy} can change this one.`;
+    lock.classList.remove('hidden');
+  } else {
+    lock.classList.add('hidden');
+  }
+}
+
+refresh();
+setInterval(refresh, 8000);
+</script>
+</body>
+</html>
